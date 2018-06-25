@@ -1,0 +1,425 @@
+---
+title: "Titanic dataset analysis"
+author: "Vaclav Svoboda, vasekneo@seznam.cz"
+date: "5/11/2017"
+output:
+  pdf_document:
+    fig_caption: yes
+    keep_tex: yes
+    number_sections: yes
+  html_document:
+    fig_caption: yes
+    force_captions: yes
+    highlight: pygments
+    number_sections: yes
+    theme: cerulean
+csl: mee.csl
+
+---
+
+```{r global_options, include=FALSE}
+knitr::opts_chunk$set(fig.pos = 'htbp')
+```
+
+# Summary
+
+The goal of this case study was to train model on training sample of Titanic passangers and to use the model to predict which of the passangers in the testing sample will survive.
+
+First I ran some preliminary data analysis, transformations and cleansing to create new dataset. 
+
+I used simple classification tree to build the model then. Tree was examined using rattle package, model accuracy and Gini was calculated. The transformed training set was also split into new training/test set and out of sample testing was performed. Model was also compared to much more simple model based only on main two predictors, this was done (on out of sample data) as a check for overfitting.
+
+```{r loadpack, include=FALSE, cache=FALSE,echo=FALSE, fig.cap="Tree model", fig.width=8, fig.height=4}
+
+
+library(ggplot2)
+library(dplyr)
+library(rattle)
+library(rpart.plot)
+library(RColorBrewer)
+library(rpart)
+library(MLmetrics)
+
+```
+
+# Data transformation and cleansing
+
+## Data cleansing
+I first examined the input data.
+```{r head, echo=FALSE}
+library(knitr)
+#setwd("C:/Users/vsvoboda001/Desktop")
+
+
+train_df=read.csv("train.csv")
+
+head(summary(train_df))
+```
+I decided to drop column "Name", it can probably be used to improve the model by for example separating family names from the string, however I wanted to create simple but reasonable model rather then spend lot of time of various small improvements.
+The ticket number column contains 681 unique values out of total 891 values in train sample, so there might be some group tickets. The largest group has size 7. Again this could be possibly  used to slightly improve model but I decided to drop this column as well.The ID column can be obviously also dropped, I also dropped the Cabin column due the large number of missing values (687 out of 891). Obviously the same transformations was applied to both training and test dataset.
+
+In the second step I decided to clean up NAs from dataset, while this is not necessary for rpart function I will use to train model, I  prefer to do this anyway. There seem to be none crazy outliers in data set so no input values have been changed.
+There was lot of NAs in the age column, I have decided to replace them by median value over combined train and test dataset. There were two missing values in Embarked column in training dataset I replaced them by the most common value in dataset (by "S") and one "Fare" value in testing dataset which I replaced by mean value over combined training and test data set.
+
+After this transformations we have the following training dataset.
+```{r str, echo=FALSE}
+library(knitr)
+
+
+
+
+train_df=read.csv("train.csv")
+test_df=read.csv("test.csv")
+# defining final output file
+
+# name is irelevant, drop it (it can probably be used for deeper analysis  by separating family name from the string)
+
+train_df0=train_df[,-4]
+test_df0=test_df[,-3]
+
+###############
+
+
+
+#681 unique values out of 891 - maybe some group tickets, largest group od size 7 - probably not significant we drop it
+
+
+train_df1=train_df0[,-8]
+test_df1=test_df0[,-7]
+
+
+########################
+
+
+## cabin column - most values missing - lets drop it + drop ID
+
+
+train_df2=train_df1[,-c(1,9)]
+test_df2=test_df1[,-c(1,8)]
+
+#######################3
+
+
+####### deal with NAs
+
+
+# Embarked - replaced missing values by most common value
+train_df2[,"Embarked"]=as.character(train_df2[,"Embarked"])
+train_df2[train_df2[,"Embarked"]=="","Embarked"]="S"
+train_df2[,"Embarked"]=as.factor(train_df2[,"Embarked"])
+# age - replace by median
+
+train_df2[is.na(train_df2[,"Age"]),"Age"]=median(rbind(train_df2[,-1],test_df2)[,"Age"],na.rm = TRUE)
+test_df2[is.na(test_df2[,"Age"]),"Age"]=median(rbind(train_df2[,-1],test_df2)[,"Age"],na.rm = TRUE)
+
+test_df2[is.na(test_df2[,"Fare"]),"Fare"]=mean(rbind(train_df2[,-1],test_df2)[,"Fare"],na.rm = TRUE)
+
+
+######### 
+
+
+
+
+
+
+
+str(str(train_df2),digits=2)
+```
+
+
+## Data transformation
+Due to my decision to use decision tree it makes more sense to discretize these variables because decision trees have some bias issues with continuous variables. The variables to be discretized are Age, Fare, Parch and Sibsp. The last two variables will be also combined into one due to their similar nature.
+
+### Age
+After checking the distribution of Age and dependency of Survived column on Age I decided for the following discretization (Figure 1) which I believe separates groups with different survival rates well enough while not overfitting (which is the main issue with decison trees).
+
+
+```{r plotAge, echo=FALSE, fig.cap="Age distribution after discretization", fig.width=8, fig.height=4}
+library(ggplot2)
+
+train_df2$Age2=0
+train_df2$Age2[train_df2$Age<=15]="0-15"
+train_df2$Age2[train_df2$Age>15 & train_df2$Age<=30]="15-30"
+
+#train_df2$Age2[train_df2$Age>=18 & train_df2$Age<=30]="18-30"
+
+
+train_df2$Age2[train_df2$Age>=30]="30+"
+
+ggplot(train_df2) + geom_bar(aes(x=Age2,fill=as.factor(Survived)),position="dodge")
+
+
+
+
+train_df2$Age=as.factor(train_df2$Age2)
+train_df2$Age2=NULL
+
+
+test_df2$Age2=0
+```
+
+
+The same transform was applied for both training and test dataset.
+
+### Fare
+Similarly I approached the fare discretization (Figure 2).
+
+```{r plotFare, echo=FALSE, fig.cap="Fare distribution after discretization", fig.width=8, fig.height=4}
+library(ggplot2)
+
+
+train_df2$Fare2=0
+
+
+train_df2$Fare2[train_df2$Fare<=10]="0-10"
+train_df2$Fare2[train_df2$Fare>10 & train_df2$Fare<=50]="10-50"
+
+
+
+train_df2$Fare2[train_df2$Fare>50]="50+"
+
+
+ggplot(train_df2) + geom_bar(aes(x=Fare2,fill=as.factor(Survived)),position="dodge")
+
+
+train_df2$Fare=as.factor(train_df2$Fare2)
+train_df2$Fare2=NULL
+
+test_df2$Fare2=0
+
+
+test_df2$Fare2[test_df2$Fare<=10]="0-10"
+test_df2$Fare2[test_df2$Fare>10 & test_df2$Fare<=50]="10-50"
+
+
+
+
+test_df2$Fare2[test_df2$Fare>50]="50+"
+
+test_df2$Fare=as.factor(test_df2$Fare2)
+test_df2$Fare2=NULL
+```
+
+
+### Spouses, siblings, kids and parents
+
+I decided to create new variable representing number of all siblings, spouses, kids and parents of passenger aboard. Intuition behind this decision is quite obvious, quantitatively this is supported by similar behaviour of these two variables. Plots below (Figures 3-5) show that survival probability behaves similarly for both of these variables and for their sum as well.
+
+```{r plotParch, echo=FALSE, fig.cap="Parch", fig.width=8, fig.height=4}
+library(ggplot2)
+ggplot(train_df2) + geom_bar(aes(x=Parch,
+                                 fill=as.factor(Survived)),
+                             position="dodge")
+
+```
+
+```{r plotSibSp, echo=FALSE, fig.cap="SibSp", fig.width=8, fig.height=4}
+ggplot(train_df2) + geom_bar(aes(x=SibSp,
+                                 fill=as.factor(Survived)),
+                             position="dodge")
+```
+
+
+```{r plotrelatives, echo=FALSE, fig.cap="Relatives=SibSp+Parch", fig.width=8, fig.height=4}
+library(ggplot2)
+
+train_df2$relatives=train_df2$SibSp+train_df2$Parch
+train_df2$SibSp=NULL
+train_df2$Parch=NULL
+
+test_df2$relatives=test_df2$SibSp+test_df2$Parch
+test_df2$SibSp=NULL
+test_df2$Parch=NULL
+
+# relatives
+ggplot(train_df2) + geom_bar(aes(x=relatives,
+                                 fill=as.factor(Survived)),
+                             position="dodge")
+```
+
+
+I also decided to discretize this variable, after some testing and examining the resulting decision trees I chose the following discretization - to group people with 1-3 relatives, which seems reasonable based on survival rates in these groups and to group people with zero and more then three relatives, this seems strange by it is caused mainly by lack of data for people with at least four relatives. I first try create three groups 0/1-3/4+ but the results were suprisingly worse. However I am not too happy with this discretization and when developing real model I would definitely spend more time on this.
+
+
+```{r plotrelatives2, echo=FALSE, fig.cap="Discrete relatives", fig.width=8, fig.height=4}
+library(ggplot2)
+
+train_df2$Relatives2=0
+
+
+train_df2$Relatives2[train_df2$relatives==0 | train_df2$relatives>3]="0 & 4+"
+train_df2$Relatives2[train_df2$relatives>0 & train_df2$relatives<=3]="1-3"
+#train_df2$Relatives2[train_df2$relatives>3]="4+"
+
+
+
+
+
+ggplot(train_df2) + geom_bar(aes(x=Relatives2,fill=as.factor(Survived)),position="dodge")
+
+
+train_df2$relatives=as.factor(train_df2$Relatives2)
+train_df2$Relatives2=NULL
+
+test_df2$Relatives2=0
+
+
+test_df2$Relatives2[test_df2$relatives==0 | test_df2$relatives>3]="0 & 4+"
+test_df2$Relatives2[test_df2$relatives>0 & test_df2$relatives<=3]="1-3"
+
+#test_df2$Relatives2[test_df2$relatives>3]="4+"
+
+
+
+
+test_df2$relatives=as.factor(test_df2$Relatives2)
+test_df2$Relatives2=NULL
+
+```
+
+
+After this all data are ready, we have six independent variables, plots of survival rates for them can be found in Figures 1,2,6,7,8,9. The variables seem reasonable for the modelling, eventhough the discretization might be bit too coarse.
+
+```{r plotSex, echo=FALSE, fig.cap="Sex", fig.width=8, fig.height=4}
+ggplot(train_df2) + geom_bar(aes(x=Sex,
+                                 fill=as.factor(Survived)),
+                             position="dodge")
+```
+
+```{r plotEmbarked, echo=FALSE, fig.cap="Embarked", fig.width=8, fig.height=4}
+ggplot(train_df2) + geom_bar(aes(x=Embarked,
+                                 fill=as.factor(Survived)),
+                             position="dodge")
+```
+
+```{r plotPclass, echo=FALSE, fig.cap="Pclass", fig.width=8, fig.height=4}
+ggplot(train_df2) + geom_bar(aes(x=Pclass,
+                                 fill=as.factor(Survived)),
+                             position="dodge")
+```
+
+# The clasification tree model and model diagnostics
+I used all six above discussed independent variables to predict the survival probability on the training set. I used standard library rpart and library rattle to visualize the tree. You can see the produced tree in Figure 10. Out of the six variables only Fare was excluded from the model (at CP=0.01).
+
+```{r plotTree,echo=FALSE, fig.cap="Tree model", fig.width=8, fig.height=4}
+
+
+
+
+tree_model <- rpart(Survived ~ Age + Pclass + Sex  + relatives  + Fare + Embarked ,
+                    data=train_df2,
+                    method="class")
+
+
+fancyRpartPlot(tree_model)
+```
+
+
+The Gini coefficient of the model is 0.74 and Accuracy us 0.83 which is ok, but out of sample test has to performed to show that model is useful. I randomly split the training sample into 80/20 training/test data set. By setting ten different values of seed I got the following values of Gini and Accuracy on given training and test data sample which seem to show that model is quite stable and probably not overfitted.
+
+
+```{r GiniAcc, echo=FALSE}
+
+
+library(knitr)
+Gtr=c()
+Gte=c()
+AcTr=c()
+AcTe=c()
+for (i in 1:10)
+{
+set.seed(i)
+new_df=cbind(train_df2,"ran"=runif(nrow(train_df2)))
+new_train=subset(new_df,ran>0.2)[,-8]
+new_test=subset(new_df,ran<0.2)[,-8]
+
+
+tree_model2 <- rpart(Survived ~ Age + Pclass + Sex  + relatives  + Fare + Embarked ,
+                     data=new_train,
+                     method="class")
+
+
+res=predict(tree_model2,new_train)
+est=predict(tree_model2,new_test)
+
+Gtr[i]=Gini(y_pred=res[,2],y_true=(new_train[,1]))
+Gte[i]=Gini(y_pred=est[,2],y_true=(new_test[,1]))
+AcTr[i]=Accuracy(ifelse(res[,2]>0.5,1,0),y_true=(new_train[,1]))
+AcTe[i]=Accuracy(ifelse(est[,2]>0.5,1,0),y_true=(new_test[,1]))
+}
+df=data.frame("Gini train"=Gtr,"Gini test"=Gte,"Accuracy train"=AcTr,"Accuracy test"=AcTe)
+print(df)
+```
+
+To test for overfitting I created simple model that classifies only based on two paramaters - Sex,Pclass. The predicted probabilities are given as simple survival rates in six distinct groups defined by these variables.
+
+```{r new, echo=FALSE}
+
+sim_model=aggregate(Survived ~ Sex +Pclass, data=train_df2, FUN=function(x) {sum(x)/length(x)})
+
+
+print(sim_model)
+```
+
+The Gini of model is 0.67 and Accuracy 0.79.
+
+Using the model on the same 10 randomly split train/test subsets gives.
+```{r simple, echo=FALSE}
+
+NGtr=c()
+NGte=c()
+NAcTr=c()
+NAcTe=c()
+for(i in 1:10)
+{
+set.seed(i)
+new_df_sim=cbind(train_df2,"ran"=runif(nrow(train_df2)))
+new_train_sim=subset(new_df_sim,ran>0.2)[,-8]
+new_test_sim=subset(new_df_sim,ran<0.2)[,-8]
+
+
+sim_pred=rep(sim_model[6,3],nrow(new_train_sim))
+sim_pred[new_train_sim$Sex=="female" & new_train_sim$Pclass==3]=sim_model[5,3]
+sim_pred[new_train_sim$Sex=="male" & new_train_sim$Pclass==2]=sim_model[4,3]
+sim_pred[new_train_sim$Sex=="female" & new_train_sim$Pclass==2]=sim_model[3,3]
+sim_pred[new_train_sim$Sex=="male" & new_train_sim$Pclass==1]=sim_model[2,3]
+sim_pred[new_train_sim$Sex=="female" & new_train_sim$Pclass==1]=sim_model[1,3]
+
+
+NGtr[i]=Gini(sim_pred,y_true=(new_train_sim[,1]))
+NAcTr[i]=Accuracy(ifelse(sim_pred>0.5,1,0),y_true=(new_train_sim[,1]))
+
+
+sim_pred=rep(sim_model[6,3],nrow(new_test_sim))
+sim_pred[new_test_sim$Sex=="female" & new_test_sim$Pclass==3]=sim_model[5,3]
+sim_pred[new_test_sim$Sex=="male" & new_test_sim$Pclass==2]=sim_model[4,3]
+sim_pred[new_test_sim$Sex=="female" & new_test_sim$Pclass==2]=sim_model[3,3]
+sim_pred[new_test_sim$Sex=="male" & new_test_sim$Pclass==1]=sim_model[2,3]
+sim_pred[new_test_sim$Sex=="female" & new_test_sim$Pclass==1]=sim_model[1,3]
+
+
+NGte[i]=Gini(sim_pred,y_true=(new_test_sim[,1]))
+NAcTe[i]=Accuracy(ifelse(sim_pred>0.5,1,0),y_true=(new_test_sim[,1]))
+}
+df=data.frame("Gini train"=NGtr,"Gini test"=NGte,"Accuracy train"=NAcTr,"Accuracy test"=NAcTe)
+print(df)
+
+```
+
+By comparison With previous table we can see that out model outperforms this model but not by too much. 
+
+
+
+#Conclusion
+
+I developed simple decision tree model that seems to be stable and not overfitted, at the same time it is far from optimized. The two main ways to improve the model would be to try more data transformation and also squeeze something from columns I dropped immediately. The other way would be to used more sophisticated ML method, most likely GBtrees or random forests would outperform this model.
+
+The model was used to predict probabilities of survival for passengers in the original test dataset, see attached csv file. 
+
+After checking the results (on Sunday evenening few hours before deadline) I noticed two flaws with model at the end:
+
+1) The predicted model gives survive rate for man only something over 3% however in a original dataset it is almost 19%.
+2) The decision tree split on relatives does not make sense - it regards males under fifteen a says that the probability of survival is radicaly different for group 1-3 relatives and 0 or 4+ relatives. This seems unreasonable I originally thought that when there is more then 3 relatives that might be chance they just give up looking for everybody therefore being in the same category as no relatives on the board however for small kids I thing this is not the case and more relatives means larger chance.
+
+
+
